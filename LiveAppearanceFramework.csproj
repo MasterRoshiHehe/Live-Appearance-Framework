@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>LiveAppearanceFramework</AssemblyName>
+    <RootNamespace>LiveAppearanceFramework</RootNamespace>
+    <EnableHarmony>false</EnableHarmony>
+    <EnableModDeploy>false</EnableModDeploy>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Pathoschild.Stardew.ModBuildConfig" Version="4.1.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="Claude outputs\**" />
+    <None Remove="Claude outputs\**" />
+    <Content Remove="Claude outputs\**" />
+  </ItemGroup>
+
+</Project>
