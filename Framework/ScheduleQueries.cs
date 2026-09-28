@@ -17,6 +17,7 @@ namespace LiveAppearanceFramework.Framework
     ///   <item><c>SCHEDULE_CURRENT_TARGET &lt;npc&gt; &lt;location&gt;+</c>: the stop she's walking to or standing at has one of these destinations (false before her first stop).</item>
     ///   <item><c>SCHEDULE_CURRENT_ROUTE &lt;npc&gt; &lt;location&gt;+</c>: her current leg passes through or ends at one of these maps.</item>
     ///   <item><c>SCHEDULE_LEAVES_FOR &lt;npc&gt; &lt;location&gt; &lt;min time&gt; [max time]</c>: she sets off towards the location between these times today.</item>
+    ///   <item><c>SCHEDULE_MINUTES_BEFORE_LEAVING &lt;npc&gt; &lt;location&gt; &lt;min&gt; [max]</c>: the in-game minutes until she sets off from her (current or next) visit to the location are between min and max.</item>
     /// </list>
     /// </summary>
     internal sealed class ScheduleQueries
@@ -44,6 +45,7 @@ namespace LiveAppearanceFramework.Framework
             GameStateQuery.Register($"{this.Prefix}_SCHEDULE_CURRENT_TARGET", this.CurrentTarget);
             GameStateQuery.Register($"{this.Prefix}_SCHEDULE_CURRENT_ROUTE", this.CurrentRoute);
             GameStateQuery.Register($"{this.Prefix}_SCHEDULE_LEAVES_FOR", this.LeavesFor);
+            GameStateQuery.Register($"{this.Prefix}_SCHEDULE_MINUTES_BEFORE_LEAVING", this.MinutesBeforeLeaving);
         }
 
         /*********
@@ -118,6 +120,56 @@ namespace LiveAppearanceFramework.Framework
                 return false;
 
             return info.Stops.Any(stop => string.Equals(stop.Location, location, StringComparison.OrdinalIgnoreCase) && stop.Time >= min && stop.Time <= max);
+        }
+
+        private bool MinutesBeforeLeaving(string[] query, GameStateQueryContext context)
+        {
+            if (!ArgUtility.TryGet(query, 1, out string npcName, out string error, allowBlank: false)
+                || !ArgUtility.TryGet(query, 2, out string location, out error, allowBlank: false)
+                || !ArgUtility.TryGetInt(query, 3, out int min, out error)
+                || !ArgUtility.TryGetOptionalInt(query, 4, out int max, out error, int.MaxValue))
+                return GameStateQuery.Helpers.ErrorResult(query, error);
+
+            ScheduleInfo info = this.GetInfo(npcName);
+            if (info == null)
+                return false;
+
+            int minutes = GetMinutesBeforeLeaving(info, location, Game1.timeOfDay);
+            return minutes >= 0 && minutes >= min && minutes <= max;
+        }
+
+        /// <summary>
+        /// In-game minutes from <paramref name="timeOfDay"/> until the NPC sets off from her current or next visit to
+        /// the location (the time of the first stop elsewhere after it). -1 if she doesn't visit it again today, or
+        /// doesn't leave it again today.
+        /// </summary>
+        public static int GetMinutesBeforeLeaving(ScheduleInfo info, string location, int timeOfDay)
+        {
+            int current = info.GetCurrentStopIndex(timeOfDay);
+
+            // The visit she's on (current stop is there) or the next one.
+            int visit = -1;
+            for (int i = Math.Max(current, 0); i < info.Stops.Count; i++)
+            {
+                if (string.Equals(info.Stops[i].Location, location, StringComparison.OrdinalIgnoreCase))
+                {
+                    visit = i;
+                    break;
+                }
+            }
+            if (visit < 0)
+                return -1;
+
+            // Several stops in a row at the same location are one visit: she leaves at the first stop elsewhere.
+            for (int i = visit + 1; i < info.Stops.Count; i++)
+            {
+                if (!string.Equals(info.Stops[i].Location, location, StringComparison.OrdinalIgnoreCase))
+                {
+                    int departure = info.Stops[i].Time;
+                    return departure > timeOfDay ? Utility.CalculateMinutesBetweenTimes(timeOfDay, departure) : -1;
+                }
+            }
+            return -1;
         }
 
         /*********

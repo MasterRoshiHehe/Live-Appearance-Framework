@@ -42,17 +42,85 @@ namespace LiveAppearanceFramework.Framework
             public bool SpecialSize;
         }
 
-        public static void Apply(Harmony harmony, IMonitor monitor, Func<ModConfig> getConfig, RefreshEngine engine)
+        private static AnimationFrameGuard Guard;
+
+        public static void Apply(Harmony harmony, IMonitor monitor, Func<ModConfig> getConfig, RefreshEngine engine, AnimationFrameGuard guard)
         {
             Monitor = monitor;
             GetConfig = getConfig;
             Engine = engine;
+            Guard = guard;
 
             harmony.Patch(
                 original: AccessTools.Method(typeof(NPC), nameof(NPC.ChooseAppearance)),
                 prefix: new HarmonyMethod(typeof(AppearancePatches), nameof(Before_ChooseAppearance)),
                 postfix: new HarmonyMethod(typeof(AppearancePatches), nameof(After_ChooseAppearance))
             );
+
+            // Event commands that show sprite frames: make sure the actor's sheet has them before the command runs.
+            harmony.Patch(
+                original: AccessTools.Method(typeof(Event.DefaultCommands), nameof(Event.DefaultCommands.Animate)),
+                prefix: new HarmonyMethod(typeof(AppearancePatches), nameof(Before_EventAnimate))
+            );
+            harmony.Patch(
+                original: AccessTools.Method(typeof(Event.DefaultCommands), nameof(Event.DefaultCommands.ShowFrame)),
+                prefix: new HarmonyMethod(typeof(AppearancePatches), nameof(Before_EventShowFrame))
+            );
+        }
+
+        /// <summary><c>animate &lt;actor&gt; &lt;flip&gt; &lt;loop&gt; &lt;ms&gt; &lt;frame&gt;+</c></summary>
+        private static void Before_EventAnimate(Event @event, string[] args)
+        {
+            try
+            {
+                if (!EventFramesEnabled() || args == null || args.Length < 6)
+                    return;
+
+                int max = -1;
+                for (int i = 5; i < args.Length; i++)
+                {
+                    if (int.TryParse(args[i], out int frame))
+                        max = Math.Max(max, frame);
+                }
+                EnsureActorFrames(@event, args[1], max);
+            }
+            catch (Exception ex)
+            {
+                LogError(ex);
+            }
+        }
+
+        /// <summary><c>showFrame [actor] &lt;frame&gt; [flip]</c> (one argument = the farmer)</summary>
+        private static void Before_EventShowFrame(Event @event, string[] args)
+        {
+            try
+            {
+                if (!EventFramesEnabled() || args == null || args.Length < 3)
+                    return;
+
+                if (int.TryParse(args[2], out int frame))
+                    EnsureActorFrames(@event, args[1], frame);
+            }
+            catch (Exception ex)
+            {
+                LogError(ex);
+            }
+        }
+
+        private static bool EventFramesEnabled()
+        {
+            ModConfig config = GetConfig?.Invoke();
+            return config != null && config.Enabled && config.AnimationFrameFallback && Guard != null;
+        }
+
+        private static void EnsureActorFrames(Event @event, string actorName, int maxFrame)
+        {
+            if (@event == null || string.IsNullOrEmpty(actorName) || maxFrame < 0 || @event.IsFarmerActorId(actorName, out _))
+                return;
+
+            NPC actor = @event.getActorByName(actorName, out _);
+            if (actor != null)
+                Guard.EnsureEventActorFrames(actor, maxFrame);
         }
 
         private static void Before_ChooseAppearance(NPC __instance, out SpriteSnapshot __state)

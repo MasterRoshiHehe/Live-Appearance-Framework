@@ -7,10 +7,12 @@ namespace LiveAppearanceFramework.Framework
     public sealed class LiveAppearanceApi : ILiveAppearanceApi
     {
         private readonly RefreshEngine Engine;
+        private readonly IdlePoseManager Poses;
 
-        internal LiveAppearanceApi(RefreshEngine engine)
+        internal LiveAppearanceApi(RefreshEngine engine, IdlePoseManager poses)
         {
             this.Engine = engine;
+            this.Poses = poses;
         }
 
         public event EventHandler<IAppearanceChangedEventArgs> AppearanceChanged
@@ -37,6 +39,21 @@ namespace LiveAppearanceFramework.Framework
         public void SafeChooseAppearance(NPC npc)
         {
             this.Engine.SafeChooseAppearance(npc);
+        }
+
+        public bool IsInPose(NPC npc)
+        {
+            return this.Poses.IsPosing(npc);
+        }
+
+        public string GetPoseId(NPC npc)
+        {
+            return this.Poses.GetPoseId(npc);
+        }
+
+        public string GetPoseStageId(NPC npc)
+        {
+            return this.Poses.GetStageId(npc);
         }
     }
 }

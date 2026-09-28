@@ -118,6 +118,9 @@ namespace LiveAppearanceFramework.Framework
 
         private ModConfig Config => this.GetConfig();
 
+        /// <summary>Idle poses (set after construction; null if unavailable).</summary>
+        internal IdlePoseManager Poses { get; set; }
+
         public RefreshEngine(IMonitor monitor, Func<ModConfig> getConfig, DynamicNpcRegistry registry, PositionalAudioBridge positionalAudio, AnimationFrameGuard guard, ScheduleTracker schedules)
         {
             this.Guard = guard;
@@ -188,6 +191,8 @@ namespace LiveAppearanceFramework.Framework
             if (IsEventUp())
             {
                 screen.EventWasUp = true;
+                if (config.AnimationFrameFallback)
+                    this.Guard.GuardEventActors(Game1.CurrentEvent);
                 return;
             }
             if (screen.EventWasUp)
@@ -373,6 +378,10 @@ namespace LiveAppearanceFramework.Framework
                 if (npc == null || !npc.IsVillager || npc.SimpleNonVillagerNPC || npc.Sprite == null)
                     continue;
 
+                // Idle poses are LAF's own animation: the pose manager looks after them.
+                if (this.Poses?.IsPosing(npc) == true)
+                    continue;
+
                 // Only NPCs that animate, or that LAF is already helping, need a record.
                 bool relevant = npc.doingEndOfRouteAnimation.Value || npc.Sprite.CurrentAnimation != null;
                 NpcState state;
@@ -433,6 +442,14 @@ namespace LiveAppearanceFramework.Framework
                 sprite.ignoreSourceRectUpdates = before.IgnoreUpdates;
             }
 
+            // Idle pose: keep it if the new sheet has its frames (back on the frame it was at), else she stands.
+            if (this.Poses?.IsPosing(npc) == true)
+            {
+                if (this.Poses.AfterSheetChanged(npc))
+                    AnimationFrameGuard.RestoreAnimationFrame(sprite);
+                return;
+            }
+
             // 2. The newly chosen sheet must hold every frame she's using, else keep a sheet that does until it ends.
             //    (-1 = nothing really animates: e.g. the game's flag is stale because another mod led her away.)
             NpcState state = this.States.GetOrCreateValue(npc);
@@ -490,6 +507,13 @@ namespace LiveAppearanceFramework.Framework
                 // A deferred NPC re-adds itself.
                 this.Refresh(entry.Npc, entry.Trigger);
             }
+        }
+
+        /// <summary>Re-check an NPC next tick (e.g. her idle pose changed, for conditions using NPC_IN_POSE). No-op for NPCs that can't change.</summary>
+        public void QueueRefresh(NPC npc, string trigger)
+        {
+            if (npc != null && Context.IsWorldReady && this.Registry.IsDynamic(npc.Name))
+                this.AddPending(this.Screens.Value, npc, trigger, Game1.ticks + 1);
         }
 
         private void AddPending(ScreenState screen, NPC npc, string trigger, int notBefore = 0)
@@ -574,6 +598,15 @@ namespace LiveAppearanceFramework.Framework
                 state.FallbackActive = false;
                 state.GuardBehavior = null;
                 state.GuardMaxFrame = -1;
+            }
+
+            // Idle pose: if it doesn't fit the new outfit, it ends first (its outro plays on the current sheet); the
+            // outfit changes once she stands.
+            if (this.Poses != null && this.Poses.PrepareForSheetChange(npc, AppearanceResolver.GetExpectedAssets(result).Sprite))
+            {
+                this.Verbose($"{npc.Name}: switch to '{result.WinnerId ?? "(default)"}' waits (idle pose ends first, trigger: {trigger}).");
+                this.AddPending(screen, npc, "PoseEnded");
+                return RefreshOutcome.Deferred;
             }
 
             // Frame check: only switch to a sheet that has every frame she uses right now (current frame, queued

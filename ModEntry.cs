@@ -24,6 +24,8 @@ namespace LiveAppearanceFramework
         private RefreshEngine Engine;
         private LiveAppearanceApi Api;
         private ScheduleTracker Schedules;
+        private AnimationFrameGuard FrameGuard;
+        private IdlePoseManager Poses;
 
         private string QueryName;
         private string RefreshActionName;
@@ -40,15 +42,27 @@ namespace LiveAppearanceFramework
 
             AppearanceResolver.Init(helper.Reflection);
             this.Schedules = new ScheduleTracker(helper.Reflection, this.Monitor);
+            this.FrameGuard = new AnimationFrameGuard(helper.Reflection, this.Monitor);
             var scheduleQueries = new ScheduleQueries(this.Schedules, this.Monitor, id);
             this.Registry = new DynamicNpcRegistry(this.Monitor, this.QueryName, scheduleQueries.Marker);
             this.PositionalAudio = new PositionalAudioBridge(this.Monitor, helper.Reflection, this.QueryName);
-            this.Engine = new RefreshEngine(this.Monitor, () => this.Config, this.Registry, this.PositionalAudio, new AnimationFrameGuard(helper.Reflection, this.Monitor), this.Schedules);
-            this.Api = new LiveAppearanceApi(this.Engine);
+            this.Engine = new RefreshEngine(this.Monitor, () => this.Config, this.Registry, this.PositionalAudio, this.FrameGuard, this.Schedules);
+            this.Poses = new IdlePoseManager(this.Monitor, helper.GameContent, () => this.Config, this.Schedules, this.Engine, $"{id}/IdlePoses");
+            this.Engine.Poses = this.Poses;
+            this.Api = new LiveAppearanceApi(this.Engine, this.Poses);
 
             try
             {
-                AppearancePatches.Apply(new HarmonyLib.Harmony(id), this.Monitor, () => this.Config, this.Engine);
+                EventActorPositions.Apply(new HarmonyLib.Harmony(id), this.Monitor, () => this.Config);
+            }
+            catch (Exception ex)
+            {
+                this.Monitor.Log($"Couldn't patch event actor outfit picks; position conditions may use the overworld NPC's position during events: {ex.Message}", LogLevel.Warn);
+            }
+
+            try
+            {
+                AppearancePatches.Apply(new HarmonyLib.Harmony(id), this.Monitor, () => this.Config, this.Engine, this.FrameGuard);
             }
             catch (Exception ex)
             {
@@ -56,19 +70,28 @@ namespace LiveAppearanceFramework
             }
 
             GameStateQuery.Register(this.QueryName, this.QueryNpcAppearance);
+            GameStateQuery.Register($"{id}_NPC_IN_POSE", this.QueryNpcInPose);
+            GameStateQuery.Register($"{id}_EVENT_ACTOR", this.QueryEventActor);
             scheduleQueries.Register();
             TriggerActionManager.RegisterAction(this.RefreshActionName, this.ActionRefresh);
 
             helper.ConsoleCommands.Add("laf_watch", "Lists the NPCs whose appearance can change during the day, and what each one is watched for.", this.CommandWatch);
             helper.ConsoleCommands.Add("laf_why", "Explains an NPC's appearance choice.\n\nUsage: laf_why <npc>", this.CommandWhy);
             helper.ConsoleCommands.Add("laf_schedule", "Shows an NPC's schedule for today as LAF's schedule queries see it.\n\nUsage: laf_schedule <npc>", this.CommandSchedule);
+            helper.ConsoleCommands.Add("laf_pose", "Shows an NPC's idle poses: which one plays, and why each entry applies or not.\n\nUsage: laf_pose <npc>", this.CommandPose);
             helper.ConsoleCommands.Add("laf_refresh", "Forces an appearance re-check.\n\nUsage: laf_refresh [npc|all]\n- npc: re-apply that NPC's appearance.\n- all (default): every dynamic NPC in your location.", this.CommandRefresh);
 
             helper.Events.GameLoop.GameLaunched += this.OnGameLaunched;
-            helper.Events.GameLoop.SaveLoaded += (_, _) => this.Engine.Reset();
-            helper.Events.GameLoop.ReturnedToTitle += (_, _) => this.Engine.Reset();
+            helper.Events.GameLoop.SaveLoaded += (_, _) => { this.Engine.Reset(); this.Poses.Reset(); };
+            helper.Events.GameLoop.ReturnedToTitle += (_, _) => { this.Engine.Reset(); this.Poses.Reset(); };
             helper.Events.GameLoop.DayStarted += (_, _) => this.Engine.OnDayStarted();
-            helper.Events.GameLoop.UpdateTicked += (_, _) => this.Engine.OnUpdateTicked();
+            helper.Events.GameLoop.DayEnding += (_, _) => this.Poses.StopAll("day ending");
+            helper.Events.GameLoop.UpdateTicked += (_, _) =>
+            {
+                this.Engine.OnUpdateTicked();
+                this.Poses.OnUpdateTicked();
+            };
+            helper.Events.Content.AssetRequested += (_, e) => this.Poses.OnAssetRequested(e);
             helper.Events.Player.Warped += this.OnWarped;
             helper.Events.Content.AssetsInvalidated += this.OnAssetsInvalidated;
         }
@@ -99,13 +122,14 @@ namespace LiveAppearanceFramework
                 this.Engine.OnCharacterDataChanged();
 
             this.PositionalAudio.OnAssetsInvalidated(e.NamesWithoutLocale);
+            this.Poses.OnAssetsInvalidated(e.NamesWithoutLocale);
         }
 
         /*********
         ** Game state query
         *********/
         /// <summary>
-        /// <c>tyr4ntx.LiveAppearanceFramework_NPC_APPEARANCE &lt;npc&gt; &lt;appearance id&gt;+</c>: true if the Appearance entry the
+        /// <c>MasterRoshiHehe.LiveAppearanceFramework_NPC_APPEARANCE &lt;npc&gt; &lt;appearance id&gt;+</c>: true if the Appearance entry the
         /// game would pick for the NPC right now is one of the given IDs. Uses a dry run, so it's correct even for NPCs in
         /// locations nobody is watching, and gives the same answer on every client.
         /// </summary>
@@ -136,10 +160,58 @@ namespace LiveAppearanceFramework
             return false;
         }
 
+        /// <summary>
+        /// <c>MasterRoshiHehe.LiveAppearanceFramework_NPC_IN_POSE &lt;npc&gt; [pose id | pose id/stage id]+</c>: true if the NPC plays an
+        /// idle pose (any pose if no ID is given). Local to each client.
+        /// </summary>
+        private bool QueryNpcInPose(string[] query, GameStateQueryContext context)
+        {
+            if (!ArgUtility.TryGet(query, 1, out string npcName, out string error, allowBlank: false))
+                return GameStateQuery.Helpers.ErrorResult(query, error);
+
+            NPC npc = Game1.getCharacterFromName(npcName);
+            string pose = npc != null ? this.Poses.GetPoseId(npc) : null;
+            if (pose == null)
+                return false;
+            if (query.Length < 3)
+                return true;
+
+            string stage = this.Poses.GetStageId(npc);
+            for (int i = 2; i < query.Length; i++)
+            {
+                string[] parts = query[i].Split('/', 2);
+                if (string.Equals(parts[0], pose, StringComparison.OrdinalIgnoreCase)
+                    && (parts.Length == 1 || string.Equals(parts[1], stage, StringComparison.OrdinalIgnoreCase)))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// <c>MasterRoshiHehe.LiveAppearanceFramework_EVENT_ACTOR [event id]+</c>: true while the game chooses the outfit of
+        /// an event actor (optionally: of one of these events). False for the NPC herself outside events. Meant for
+        /// Appearance conditions, e.g. <c>!..._EVENT_ACTOR</c> keeps an outfit off event actors.
+        /// </summary>
+        private bool QueryEventActor(string[] query, GameStateQueryContext context)
+        {
+            if (EventActorPositions.DressingActor == null)
+                return false;
+            if (query.Length < 2)
+                return true;
+
+            string eventId = EventActorPositions.DressingEventId;
+            for (int i = 1; i < query.Length; i++)
+            {
+                if (string.Equals(query[i], eventId, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+
         /*********
         ** Trigger action
         *********/
-        /// <summary><c>tyr4ntx.LiveAppearanceFramework_Refresh [npc|All]+</c>: re-check the given NPCs (or every dynamic NPC in the player's location).</summary>
+        /// <summary><c>MasterRoshiHehe.LiveAppearanceFramework_Refresh [npc|All]+</c>: re-check the given NPCs (or every dynamic NPC in the player's location).</summary>
         private bool ActionRefresh(string[] args, TriggerActionContext context, out string error)
         {
             error = null;
@@ -245,6 +317,9 @@ namespace LiveAppearanceFramework
             string animationInfo = this.Engine.DescribeAnimation(npc);
             if (animationInfo != null)
                 text.AppendLine("  " + animationInfo);
+            string poseInfo = this.Poses.Describe(npc, detailed: false);
+            if (poseInfo != null)
+                text.AppendLine($"  {poseInfo} Details: laf_pose {npc.Name}");
             if (this.Engine.HasPending(npc, out string pendingTrigger))
                 text.AppendLine($"  A refresh is queued ({pendingTrigger}).");
 
@@ -364,6 +439,29 @@ namespace LiveAppearanceFramework
             this.Monitor.Log(text.ToString(), LogLevel.Info);
         }
 
+        private void CommandPose(string command, string[] args)
+        {
+            if (!Context.IsWorldReady)
+            {
+                this.Monitor.Log("Load a save first.", LogLevel.Info);
+                return;
+            }
+            if (args.Length < 1)
+            {
+                this.Monitor.Log("Usage: laf_pose <npc>", LogLevel.Info);
+                return;
+            }
+
+            NPC npc = Game1.getCharacterFromName(args[0]);
+            if (npc == null)
+            {
+                this.Monitor.Log($"No NPC found with name '{args[0]}'.", LogLevel.Info);
+                return;
+            }
+
+            this.Monitor.Log($"{npc.Name} at {Game1.timeOfDay}, in {npc.currentLocation?.NameOrUniqueName ?? "(no location)"} (tile {npc.TilePoint.X} {npc.TilePoint.Y}, facing {npc.FacingDirection}):\n{this.Poses.Describe(npc, detailed: true)}", LogLevel.Info);
+        }
+
         /// <summary>One line for laf_why.</summary>
         private string DescribeSchedule(NPC npc)
         {
@@ -414,6 +512,10 @@ namespace LiveAppearanceFramework
                 () => "Keep animations visible", () => "Only change an NPC's outfit sheet when the new sheet has the frames she's using, and if her outfit sheet lacks her schedule animation's frames (e.g. Harem Valley scenes with custom outfits), show a sheet that has them until it ends.");
             gmcm.AddBoolOption(this.ModManifest, () => this.Config.RepairInterruptedAnimations, v => this.Config.RepairInterruptedAnimations = v,
                 () => "Repair interrupted animations", () => "Restart an NPC's schedule animation when another mod interrupted it and she's still on her spot (e.g. after a kiss), and end it properly when a mod leads her away mid-animation (e.g. a companion recruiter).");
+            gmcm.AddBoolOption(this.ModManifest, () => this.Config.EventActorsUseOwnPosition, v => this.Config.EventActorsUseOwnPosition = v,
+                () => "Event actors use their own position", () => "When an NPC's event actor picks its outfit, position conditions (e.g. BETAS NPC_NEAR_AREA) check where the actor stands in the event, not where the real NPC is. Stops e.g. room-only pyjamas from showing in outdoor events.");
+            gmcm.AddBoolOption(this.ModManifest, () => this.Config.IdlePoses, v => this.Config.IdlePoses = v,
+                () => "Idle poses", () => "Play idle poses from content packs (e.g. lying on a towel at the beach) while an NPC stands still. Off: she just stands.");
             gmcm.AddBoolOption(this.ModManifest, () => this.Config.DeferDuringAnimations, v => this.Config.DeferDuringAnimations = v,
                 () => "Wait for animations", () => "Don't change an NPC's sprite in the middle of a schedule animation. Only needed if an outfit sheet lacks the animation frames.");
             gmcm.AddBoolOption(this.ModManifest, () => this.Config.RefreshPositionalAudio, v => this.Config.RefreshPositionalAudio = v,

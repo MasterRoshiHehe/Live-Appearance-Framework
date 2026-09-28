@@ -41,6 +41,15 @@ namespace LiveAppearanceFramework.Framework
         /// </summary>
         public bool RepairInterruptedAnimations { get; set; } = true;
 
+        /// <summary>
+        /// While an event actor picks its outfit, position queries that look the NPC up by name (BETAS NPC_NEAR_AREA,
+        /// Positional Audio NPC_POSITION...) see the actor's position instead of the overworld NPC's.
+        /// </summary>
+        public bool EventActorsUseOwnPosition { get; set; } = true;
+
+        /// <summary>Play idle poses from content packs (<c>MasterRoshiHehe.LiveAppearanceFramework/IdlePoses</c>).</summary>
+        public bool IdlePoses { get; set; } = true;
+
         /// <summary>After an appearance change, tell Positional Audio to re-check its sounds (only if it's installed and a sound uses LAF's query).</summary>
         public bool RefreshPositionalAudio { get; set; } = true;
 

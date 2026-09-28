@@ -1,12 +1,14 @@
 {
     "Name": "Live Appearance Framework",
-    "Author": "tyr4ntx",
-    "Version": "0.1.0",
+    "Author": "MasterRoshiHehe",
+    "Version": "0.2.0",
     "Description": "Re-checks NPC Appearance entries (Data/Characters) during the day, so outfits controlled by Content Patcher change live: on clock changes, when an NPC moves or animates, and on request.",
-    "UniqueID": "tyr4ntx.LiveAppearanceFramework",
+    "UniqueID": "MasterRoshiHehe.LiveAppearanceFramework",
     "EntryDll": "LiveAppearanceFramework.dll",
     "MinimumApiVersion": "4.0.0",
-    "UpdateKeys": [],
+    "UpdateKeys": [
+        "Nexus:52940"
+    ],
     "Dependencies": [
         {
             "UniqueID": "spacechase0.GenericModConfigMenu",

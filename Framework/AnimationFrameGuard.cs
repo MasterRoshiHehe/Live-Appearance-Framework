@@ -416,6 +416,62 @@ namespace LiveAppearanceFramework.Framework
             return true;
         }
 
+        /*********
+        ** Event actors
+        *********/
+        /// <summary>
+        /// Event actors are separate NPC objects that start with the outfit sheet the NPC wears. If an event command
+        /// shows frames that sheet doesn't have (e.g. Harem Valley event frames that only exist on the default sheet),
+        /// the game shows frame 0 instead. This switches the actor to a sheet that has the frames. The actor is
+        /// discarded when the event ends, so the switch is never undone mid-event (later commands may rely on it too).
+        /// </summary>
+        /// <returns>Whether the actor's sheet was switched.</returns>
+        public bool EnsureEventActorFrames(NPC actor, int maxFrame)
+        {
+            AnimatedSprite sprite = actor?.Sprite;
+            if (sprite?.spriteTexture == null || maxFrame < 0 || CanShow(sprite.spriteTexture, sprite, maxFrame))
+                return false;
+
+            string from = AppearanceResolver.GetSpriteAsset(actor);
+            foreach (string candidate in GetCandidates(actor))
+            {
+                Texture2D texture = TryLoad(candidate);
+                if (texture == null || !CanShow(texture, sprite, maxFrame))
+                    continue;
+
+                sprite.LoadTexture(candidate, Game1.IsMasterGame);
+                this.LogOnce(
+                    $"event:{Game1.CurrentEvent?.id}:{actor.Name}:{candidate}",
+                    $"Event '{Game1.CurrentEvent?.id}': {actor.Name}'s sheet '{from}' has no frame {maxFrame}, using '{candidate}' for the rest of the event.",
+                    LogLevel.Trace);
+                return true;
+            }
+
+            this.LogOnce(
+                $"event-none:{Game1.CurrentEvent?.id}:{actor.Name}:{maxFrame}",
+                $"Event '{Game1.CurrentEvent?.id}': no sheet has frame {maxFrame} for {actor.Name} (current: '{from}'). The game will show frame 0.",
+                LogLevel.Trace);
+            return false;
+        }
+
+        /// <summary>Per-tick safety net for event actors animated by commands LAF doesn't patch (other mods' commands).</summary>
+        public void GuardEventActors(Event @event)
+        {
+            if (@event?.actors == null)
+                return;
+
+            foreach (NPC actor in @event.actors)
+            {
+                AnimatedSprite sprite = actor?.Sprite;
+                if (sprite?.CurrentAnimation == null)
+                    continue;
+
+                int maxFrame = MaxOfCurrentAnimation(sprite);
+                if (this.EnsureEventActorFrames(actor, maxFrame))
+                    RestoreAnimationFrame(sprite);
+            }
+        }
+
         /// <summary>After the NPC's sheet changed while nothing animates: if her frame isn't on the new sheet, show her standing in her facing direction instead of frame 0.</summary>
         public static void NormalizeIdleFrame(NPC npc, int frameBefore)
         {

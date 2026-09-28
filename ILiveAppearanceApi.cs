@@ -6,7 +6,7 @@ namespace LiveAppearanceFramework
     /// <summary>
     /// Public API of Live Appearance Framework. Other mods copy this file (and <see cref="IAppearanceChangedEventArgs"/>)
     /// into their own code and get it with
-    /// <c>Helper.ModRegistry.GetApi&lt;ILiveAppearanceApi&gt;("tyr4ntx.LiveAppearanceFramework")</c>.
+    /// <c>Helper.ModRegistry.GetApi&lt;ILiveAppearanceApi&gt;("MasterRoshiHehe.LiveAppearanceFramework")</c>.
     /// Returns null when LAF isn't installed, so use it as a soft dependency.
     /// </summary>
     public interface ILiveAppearanceApi
@@ -41,6 +41,15 @@ namespace LiveAppearanceFramework
         /// records in sync. Ignores LAF's guards: the caller decides when it's safe.
         /// </summary>
         void SafeChooseAppearance(NPC npc);
+
+        /// <summary>Whether the NPC plays an idle pose right now (on this client).</summary>
+        bool IsInPose(NPC npc);
+
+        /// <summary>The ID of the idle pose the NPC plays right now (the key in <c>MasterRoshiHehe.LiveAppearanceFramework/IdlePoses</c>), or null.</summary>
+        string GetPoseId(NPC npc);
+
+        /// <summary>The ID of the stage of that pose playing right now, or null.</summary>
+        string GetPoseStageId(NPC npc);
     }
 
     /// <summary>Details of an appearance change.</summary>
@@ -55,7 +64,7 @@ namespace LiveAppearanceFramework
         /// <summary>The new Appearance entry ID, or null (default textures).</summary>
         string NewAppearanceId { get; }
 
-        /// <summary>What caused the check: Clock, Tile, Animation, Warp, DayStarted, DataChanged, EventEnded, DialogueClosed, AnimationEnded, TriggerAction, Api, Console.</summary>
+        /// <summary>What caused the check: Clock, Tile, Animation, Warp, DayStarted, DataChanged, EventEnded, DialogueClosed, AnimationEnded, PoseEnded, TriggerAction, Api, Console.</summary>
         string Trigger { get; }
     }
 }
